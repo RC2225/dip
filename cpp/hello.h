@@ -27,6 +27,9 @@ cv::Mat threshold_zero(cv::Mat img);
 cv::Mat threshold_binary(cv::Mat img);
 cv::Mat threshold_contrast(cv::Mat img);
 
+void sobel(cv::Mat &image);
+void roberts(cv::Mat &image);
+void previtt(cv::Mat &image);
 
 std::string openFileDialog() {
     std::array<char, 512> buffer;
