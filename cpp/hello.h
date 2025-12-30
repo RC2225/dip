@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <array>
 #include <functional>
+#include <cmath>
 
 using namespace cv;
 using namespace std;
@@ -39,7 +40,7 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
 {
 	std::cout << cv::getBuildInformation() << std::endl;
 	cv::utils::logging::setLogLevel(
-		cv::utils::logging::LOG_LEVEL_VERBOSE);
+		cv::utils::logging::LOG_LEVEL_INFO);
 
 	VideoCapture cap(inputVideoPath, cv::CAP_FFMPEG);
 	if (!cap.isOpened())
@@ -130,4 +131,202 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
 
 	cout << "Foreground video saved to: " << outputVideoPath << endl;
 	cout << "Background image saved to: " << outputBgImage << endl;
+}
+
+
+// --------------------------------------------------
+// Compute mean, variance, skewness, kurtosis
+// --------------------------------------------------
+void computeMoments1(const vector<float>& data,
+    double& mean, double& var,
+    double& skew, double& kurt)
+{
+    int N = data.size();
+    mean = var = skew = kurt = 0.0;
+
+    for (float x : data) mean += x;
+    mean /= N;
+
+    for (float x : data)
+        var += (x - mean) * (x - mean);
+    var /= N;
+
+    double stddev = sqrt(var + 1e-8);
+
+    for (float x : data) {
+        skew += pow((x - mean) / stddev, 3);
+        kurt += pow((x - mean) / stddev, 4);
+    }
+
+    skew /= N;
+    kurt = kurt / N - 3.0; // excess kurtosis
+}
+
+// --------------------------------------------------
+// Plot histogram (noise PDF visualization)
+// --------------------------------------------------
+void plotHistogram1(const Mat& noise)
+{
+    int histSize = 256;
+    float range[] = { -128, 128 };
+    const float* histRange = { range };
+
+    Mat hist;
+    calcHist(&noise, 1, 0, Mat(), hist, 1, &histSize, &histRange);
+
+    Mat histImg(400, 512, CV_8UC3, Scalar(0, 0, 0));
+    normalize(hist, hist, 0, histImg.rows, NORM_MINMAX);
+
+    for (int i = 1; i < histSize; i++) {
+        line(histImg,
+            Point((i - 1) * 2, histImg.rows - cvRound(hist.at<float>(i - 1))),
+            Point(i * 2, histImg.rows - cvRound(hist.at<float>(i))),
+            Scalar(255, 255, 255), 2);
+    }
+
+    imshow("Noise Histogram", histImg);
+}
+
+// --------------------------------------------------
+// Classify noise type from statistics
+// --------------------------------------------------
+string classifyNoise1(double skew, double kurt, double impulseRatio)
+{
+    if (impulseRatio > 0.01)
+        return "Salt-and-Pepper";
+
+    if (abs(skew) < 0.3 && abs(kurt) < 1.0)
+        return "Gaussian";
+
+    if (abs(skew) < 0.3 && kurt < -1.0)
+        return "Uniform";
+
+    if (skew > 0.7 && skew < 1.8 && kurt > 0)
+        return "Rayleigh";
+
+    if (skew >= 2.0 && kurt > 4.0)
+        return "Exponential";
+
+    if (skew > 1.0 && kurt > 1.0)
+        return "Gamma / Erlang";
+
+    return "Unknown / Mixed";
+}
+
+// --------------------------------------------------
+// Main
+// --------------------------------------------------
+int analyzeImage(std::string path)
+{
+    VideoCapture cap(path);
+    if (!cap.isOpened()) {
+        cout << "Error opening video" << endl;
+        return -1;
+    }
+
+    map<string, int> voteCounter;
+    
+    int frameIndex = 0;        // actual frame number
+    int analyzedFrames = 0;   // frames used for statistics
+    int frameCount = 0;
+
+    while (true) {
+
+        Mat frame;
+        cap >> frame;
+        if (frame.empty())
+            break; // end of video
+
+        // ------------------------------
+        // PROCESS EVERY 3RD FRAME ONLY
+        // ------------------------------
+        if (frameIndex % 3 != 0) {
+            frameIndex++;
+            continue;
+        }
+
+
+        // Convert to grayscale
+        Mat gray;
+        cvtColor(frame, gray, COLOR_BGR2GRAY);
+        gray.convertTo(gray, CV_32F);
+
+        // ------------------------------
+        // Noise extraction
+        // ------------------------------
+        Mat median, smooth;
+        medianBlur(gray, median, 5);
+        GaussianBlur(median, smooth, Size(5, 5), 1.2);
+
+        Mat noise = gray - smooth;
+        normalize(noise, noise, -128, 127, NORM_MINMAX);
+
+        // Collect samples
+        vector<float> samples;
+        int impulseCount = 0;
+
+        for (int y = 0; y < noise.rows; y++) {
+            for (int x = 0; x < noise.cols; x++) {
+                float v = noise.at<float>(y, x);
+                samples.push_back(v);
+                if (abs(v) > 120) impulseCount++;
+            }
+        }
+
+        double impulseRatio = (double)impulseCount / samples.size();
+
+        // Statistics
+        double mean, var, skew, kurt;
+        computeMoments1(samples, mean, var, skew, kurt);
+
+        // Classification
+        string noiseType = classifyNoise1(skew, kurt, impulseRatio);
+        voteCounter[noiseType]++;
+
+        cout << "Frame " << frameIndex
+            << " | Noise: " << noiseType
+            << " | Skew: " << skew
+            << " | Kurt: " << kurt
+            << " | Impulse: " << impulseRatio * 100 << "%" << endl;
+
+        // Visualization
+        plotHistogram1(noise);
+        putText(frame, noiseType, Point(30, 40),
+            FONT_HERSHEY_SIMPLEX, 1.0, Scalar(0, 255, 0), 2);
+
+        imshow("Video", frame);
+        if (waitKey(30) == 27) break;
+
+        analyzedFrames++;
+
+        frameIndex++;
+    }
+
+
+
+    // ------------------------------
+    // FINAL DECISION (MAJORITY VOTE)
+    // ------------------------------
+    string finalNoise = "Unknown";
+    int maxVotes = 0;
+    int totalVotes = 0;
+
+    for (const auto& p : voteCounter) {
+        totalVotes += p.second;
+        if (p.second > maxVotes) {
+            maxVotes = p.second;
+            finalNoise = p.first;
+        }
+    }
+
+    // Confidence (% of frames agreeing)
+    double confidence = 100.0 * maxVotes / totalVotes;
+
+    cout << "\n==============================\n";
+    cout << "FINAL DETECTED NOISE TYPE : " << finalNoise << endl;
+    cout << "CONFIDENCE                : " << confidence << " %" << endl;
+    cout << "==============================\n";
+
+    waitKey(0);
+    return 0;
 }
