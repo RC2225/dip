@@ -2,6 +2,7 @@
 #include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/highgui/highgui.hpp"
 #include <opencv2/bgsegm.hpp>
+#include <opencv2/core/utils/logger.hpp>
 #include <iostream>
 #include <cstdlib>
 #include <array>
@@ -32,18 +33,23 @@ std::string openFileDialog() {
 }
 
 
-void extractBackground(std::string inputVideoPath, std::string outputVideoPath, std::string outputBgImage) {
-		outputVideoPath = "/home/timwalter/out.mp4";
-		outputBgImage = "/home/timwalter/out.jpg";
-		VideoCapture videoInput(inputVideoPath);
-		if (!videoInput.isOpened())
+void extractBackground(std::string inputVideoPath, std::string outputVideoPath, std::string outputBgImage, Ptr<BackgroundSubtractor> bgSubtractor) {
+	    std::cout << cv::getBuildInformation() << std::endl;
+	    cv::utils::logging::setLogLevel(
+        cv::utils::logging::LOG_LEVEL_VERBOSE
+    );
+
+   
+		VideoCapture cap(inputVideoPath,cv::CAP_FFMPEG);
+		if (!cap.isOpened())
 		{
 			cerr << "Error opening video file!" << endl;
+			std::exit(1);
 		}
 
-		int width = (int)videoInput.get(CAP_PROP_FRAME_WIDTH);
-		int height = (int)videoInput.get(CAP_PROP_FRAME_HEIGHT);
-		double fps = videoInput.get(CAP_PROP_FPS);
+		int width = (int)cap.get(CAP_PROP_FRAME_WIDTH);
+		int height = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
+		double fps = cap.get(CAP_PROP_FPS);
 
 		VideoWriter writer(
 			outputVideoPath,
@@ -52,17 +58,20 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
 			cv::Size(width, height)
 		);
 
-		cv::Ptr<cv::BackgroundSubtractor> bgSubtractor =
-			cv::bgsegm::createBackgroundSubtractorLSBP(
-			cv::bgsegm::LSBP_CAMERA_MOTION_COMPENSATION_NONE,
-			20,
-			16,
-			true,
-			0.5f
-		);
-		// Ptr<BackgroundSubtractor> bgSubtractor =
-		// createBackgroundSubtractorMOG2(500, 16, true);
-
+		
+			
+		// bgSubtractor =
+		// 			cv::bgsegm::createBackgroundSubtractorLSBP(
+		// 			cv::bgsegm::LSBP_CAMERA_MOTION_COMPENSATION_NONE, // Motion compensation
+		// 			20,
+		// 			// Number of samples
+		// 			16,
+		// 			// LSBPattern radius
+		// 			true,
+		// 			// Use color
+		// 			0.5f
+		// 			// Lower threshold
+		// );
 		Mat frame, fgMask, fgMaskClean, foreground;
 
 		// Floating-point background accumulator
@@ -73,7 +82,7 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
 
 		while (true)
 		{
-			videoInput >> frame;
+			cap >> frame;
 			if (frame.empty())
 				break;
 
@@ -93,8 +102,6 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
 			Mat bgMask;
 			bitwise_not(fgMaskClean, bgMask);
 
-	
-
             Mat frameFloat;
 
             frame.convertTo(frameFloat, CV_32FC3);
@@ -104,34 +111,35 @@ void extractBackground(std::string inputVideoPath, std::string outputVideoPath, 
             bgFloat += frameFloat;
 
             // Count background samples
-            Mat ones = Mat::ones(frame.size(), CV_32FC1);
-            ones.setTo(0, fgMaskClean);
-            bgCount += ones;
+			Mat bgMaskFloat;
+			bgMask.convertTo(bgMaskFloat, CV_32FC1, 1.0 / 255.0);
+			bgCount += bgMaskFloat;
 		}
 
-		videoInput.release();
+		cap.release();
 		writer.release();
 		
 		
-		// Final background image
-				Mat bgFinal;
-		// divide(bgFloat, bgCount, bgFinal);
-		Mat bgCount3;
-		cvtColor(bgCount, bgCount3, COLOR_GRAY2BGR);
 
-		divide(bgFloat, bgCount3, bgFinal);
+		// // Final background image
+		// Mat bgFinal;
+		// // divide(bgFloat, bgCount, bgFinal);
+		// Mat bgCount3;
+		// bgCount3.setTo(1, bgCount3 == 0);
+		// cvtColor(bgCount, bgCount3, COLOR_GRAY2BGR);
+
+		// divide(bgFloat, bgCount3, bgFinal);
 
 
-		// Replace NaNs (never-seen pixels)
-		bgFinal.setTo(0, bgCount == 0);
+		// // Replace NaNs (never-seen pixels)
+		// bgFinal.setTo(0, bgCount == 0);
 
-		bgFinal.convertTo(bgFinal, CV_8UC3);
-		imwrite(outputBgImage, bgFinal);
-		imwrite(outputBgImage, bgFinal);
+		// bgFinal.convertTo(bgFinal, CV_8UC3);
+		// imwrite(outputBgImage, bgFinal);
 
 		cout << "Foreground video saved to: " << outputVideoPath << endl;
 		cout << "Background image saved to: " << outputBgImage << endl;
 
-		
+
 	}
 
